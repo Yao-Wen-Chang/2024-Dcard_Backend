@@ -1,14 +1,43 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
-	"fmt"
+	"log"
 	"net/http"
 	"time"
-
+	"github.com/lib/pq"
 	"github.com/gorilla/mux"
 )
 
+
+type Gender string
+const (
+	Male   Gender = "M"
+	Female Gender = "F"
+)
+
+type Country string
+const (
+	Taiwan  Country = "TW"
+	Japan  Country = "JP"
+	
+)
+
+type Platform string
+const (
+	Android Platform = "android"
+	IOS  Platform = "ios"
+	Web Platform = "web"
+)
+// Conditions represents the conditions for displaying the ad
+type Conditions struct {
+	AgeStart  int      `json:"ageStart,omitempty"`
+	AgeEnd    int      `json:"ageEnd,omitempty"`
+	Gender    Gender   `json:"gender,omitempty"`
+	Country   []Country `json:"country,omitempty"`
+	Platform  []Platform `json:"platform,omitempty"`
+}
 // Ad represents the structure of an advertisement
 type Ad struct {
 	Title      string     `json:"title"`
@@ -17,19 +46,12 @@ type Ad struct {
 	Conditions Conditions `json:"conditions"`
 }
 
-// Conditions represents the conditions for displaying the ad
-type Conditions struct {
-	AgeStart  int      `json:"ageStart,omitempty"`
-	AgeEnd    int      `json:"ageEnd,omitempty"`
-	Gender    string   `json:"gender,omitempty"`
-	Country   []string `json:"country,omitempty"`
-	Platform  []string `json:"platform,omitempty"`
-}
-
 var ads []Ad
+var db *sql.DB
 
 func main() {
 	r := mux.NewRouter()
+	connectDB()
 	// Admin API
 	r.HandleFunc("/api/v1/ad", createAd).Methods("POST")
 
@@ -41,6 +63,15 @@ func main() {
 
 }
 
+func connectDB() {
+	var err error
+	connStr := "user=postgres password=root dbname=addatabase sslmode=disable"
+	db, err = sql.Open("postgres", connStr)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
 func createAd(w http.ResponseWriter, r *http.Request) {
 	var newAd Ad
 	err := json.NewDecoder(r.Body).Decode(&newAd)
@@ -49,18 +80,34 @@ func createAd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ads = append(ads, newAd)
+	// ads = append(ads, newAd)
+// fmt.Println(ads)
+	if newAd.Conditions.Gender != "" {
+		genderArray := pq.Array(newAd.Conditions.Gender)
+		_, err = db.Exec("INSERT INTO advertisement (title, start_at, end_at, age_start, age_end, gender, country, platform) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+		newAd.Title, newAd.StartAt, newAd.EndAt, newAd.Conditions.AgeStart, newAd.Conditions.AgeEnd, genderArray, pq.Array(newAd.Conditions.Country), pq.Array(newAd.Conditions.Platform))
+	} else {
+		_, err = db.Exec("INSERT INTO advekrtisement (title, start_at, end_at, age_start, age_end, country, platform) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+		newAd.Title, newAd.StartAt, newAd.EndAt, newAd.Conditions.AgeStart, newAd.Conditions.AgeEnd, pq.Array(newAd.Conditions.Country), pq.Array(newAd.Conditions.Platform))
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-	w.WriteHeader(http.StatusCreated)
-	w.Write([]byte("Ad created successfully"))
+	// w.WriteHeader(http.StatusCreated)
+	// w.Write([]byte("Ad created successfully"))
 }
 
 func listAds(w http.ResponseWriter, r *http.Request) {
 	var age, gender, country, platform string
-	var offset, limit int
+	// var offset, limit int
 
 	query := r.URL.Query()
 	if val := query.Get("age"); val != "" {
+		age = val
+	}
+	if val := query.Get("now"); val != "" {
 		age = val
 	}
 	if val := query.Get("gender"); val != "" {
@@ -80,7 +127,21 @@ func listAds(w http.ResponseWriter, r *http.Request) {
 		// Parse limit as an integer
 		// Handle error if not a valid integer
 	}
+// Construct the SQL query based on the filters
+	sqlQuery := "SELECT * FROM advertisement WHERE start_at <= NOW() AND end_at >= NOW()"
+	if age != "" {
+		sqlQuery += " AND age_start <= " + age + " AND age_end >= " + age
+	}
+	if gender != "" {
+		sqlQuery += " AND gender = '" + gender + "'"
+	} 
 
+	if country != "" {
+		sqlQuery += " AND '" + country + "' = ANY(country)"
+	}
+	if platform != "" {
+		sqlQuery += " AND '" + platform + "' = ANY(country)"
+	}
 	var matchingAds []Ad
 	now := time.Now()
 
